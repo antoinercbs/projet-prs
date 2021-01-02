@@ -4,9 +4,8 @@ import java.io.IOException;
 import java.net.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.sql.SQLOutput;
 
-public class FileServer extends Thread {
+public class CubicFileServer extends Thread {
 
     //Variables du réseau UDP/du fichier à servir
     private DatagramSocket socket;
@@ -20,13 +19,28 @@ public class FileServer extends Thread {
     private boolean isConnectionAck = false;
 
     //Variable pour refaire TCP
-    private int lastAckSeg = -1;
-    private int higherAckSeg = -1;
-    private int lastSendedSeg = 0;
-    private int segSize = 1500;
-    private int cwnd = 150;
-    private int timeout = 50;
-    private int redondantAckCount = 0;
+   boolean tcpFriendliness = true;
+   boolean fastConvergence = true;
+   double beta = 0.2;
+   double c = 0.4;
+   double wLastMax = 0;
+   double epochStart = 0;
+   double originPoint = 0;
+   double minRtt = 0;
+   int wTcp = 0;
+   double k = 0;
+   double rtt = 0;
+   int cwnd = 1;
+   int ssthresh = Integer.MAX_VALUE;
+   int cwndUpdate = 1;
+
+
+    int timeout = 150;
+    int lastAckSeg = -1;
+    int lastSendedSeg = 0;
+    int segSize = 1500;
+    int redondantAckCount = 0;
+
 
     //Variables de metrics
     private long startTime = 0;
@@ -34,17 +48,96 @@ public class FileServer extends Thread {
 
 
 
-    public FileServer(InetAddress clientAddress, int clientPort) {
+    public CubicFileServer(InetAddress clientAddress, int clientPort) {
         this.clientAdress = clientAddress;
         this.clientPort = clientPort;
         this.startTime = System.currentTimeMillis();
         try {
             initiateSocketOnRange(1000, 9999);
-            this.socket.setSoTimeout(timeout);
+            this.socket.setSoTimeout(this.timeout);
         } catch (SocketException e) {
             e.printStackTrace();
         }
     }
+
+    private void cubicReset() {
+        this.wLastMax = 0;
+        this.epochStart = 0;
+        this.originPoint = 0;
+        this.minRtt = 0;
+        this.wTcp = 0;
+        this.k = 0;
+        this.ssthresh = Integer.MAX_VALUE;
+    }
+
+    private void cubicInitialization() {
+        this.tcpFriendliness = true;
+        this.fastConvergence = true;
+        this.beta = 0.2;
+        this.c = 0.4;
+        this.cubicReset();
+    }
+
+    private void cubicTimeout() {
+        this.cubicReset();
+    }
+
+
+    private void cubicPacketLoss() {
+        this.epochStart = 0;
+        if (this.cwnd < this.wLastMax && this.fastConvergence) {
+            this.wLastMax = this.cwnd*(2*this.beta)/2.0;
+        } else {
+            this.wLastMax = this.cwnd;
+        }
+        this.cwnd = (int) (this.cwnd*(1-this.beta));
+        this.ssthresh = cwnd;
+    }
+
+    private void cubicOnData() {
+        if (this.minRtt != 0) this.minRtt = Math.min(this.minRtt, this.rtt);
+        else this.minRtt = this.rtt;
+        if (this.cwnd <= this.ssthresh) this.cwnd++;
+        else {
+            this.cubicUpdate();
+        }
+    }
+
+    private void cubicUpdate() {
+        //this.ackCnt++;
+        if (this.epochStart <= 0) {
+            this.epochStart = System.currentTimeMillis()/1000.0;
+            if (this.cwnd < this.wLastMax) {
+                this.k = Math.cbrt((this.wLastMax-this.cwnd)/this.c);
+                this.originPoint = wLastMax;
+            } else {
+                this.k = 0;
+                this.originPoint = cwnd;
+            }
+            //this.ackCnt = 1;
+            this.wTcp = cwnd;
+        }
+        double t = System.currentTimeMillis()/1000.0 +this.minRtt -this.epochStart;
+        double target = this.originPoint + this.c*Math.pow((t-this.k),3);
+        if (target > this.cwnd) {
+            //this.cwndUpdate = this.cwnd/(target-this.cwnd);
+            this.cwndUpdate = (int) ((target-this.cwnd)/cwnd);
+        } else {
+            //this.cwndUpdate = 100*cwnd;
+            this.cwndUpdate = (int) (this.cwnd + 0.01/this.cwnd);
+        }
+        if (this.tcpFriendliness) {
+            //this.cubicTcpFriendliness();
+            this.wTcp = (int) (this.wTcp + (3*this.beta)/(2-this.beta) * t/this.rtt);
+            if (this.wTcp>this.cwnd && this.wTcp > target) {
+               /* this.maxCnt = this.cwnd/(this.wTcp-this.cwnd);
+                if (this.cwndUpdate > this.maxCnt) this.cwndUpdate = this.maxCnt;*/
+                this.cwndUpdate = (int) (this.cwnd + (this.wTcp-this.cwnd)/this.cwnd);
+            }
+        }
+    }
+
+
 
     public void run() {
         running = true;
@@ -53,6 +146,8 @@ public class FileServer extends Thread {
             if (firstRun) {
                 firstRun = false;
                 sendSynMsg();
+                this.cubicInitialization();
+                this.cubicOnData();
             }
             try {
                 String received = receiveString();
@@ -63,31 +158,36 @@ public class FileServer extends Thread {
                     }
                 } else if (received.startsWith("A")) { //Si on a reçu l'ACK du dernier seg transmit
                     int receivedAck = getSegFromAck(received);
-                    if (receivedAck == this.lastAckSeg) {
+                    if (receivedAck == this.lastAckSeg) { //TODO : LE PROBLEME EST ICI !!!!
                         this.redondantAckCount++;
-                        if (this.redondantAckCount >= 3) {
+                        if (this.redondantAckCount >= 20) {
                             this.redondantAckCount = 0;
-                            this.sendSegment(receivedAck+1);
+                            System.out.println("ACK redondant détecté !!!");
+                            this.cubicPacketLoss();
+                            this.sendNextSegementGroup(Math.max(this.cwnd, 1));
                         }
                     } else {
                         this.redondantAckCount = 0;
-                        this.higherAckSeg = Math.max(this.lastAckSeg, receivedAck);
-                        if (this.higherAckSeg == this.lastSendedSeg) { //si on a reçu tous les ACK correspondant à la cwnd
-                            //System.out.println("RTT = " + (System.currentTimeMillis()-this.sendTime));
-                            this.sendNextSegementGroup(++this.cwnd);
+                        this.cubicOnData();
+                        if (receivedAck == this.lastSendedSeg) { //si on a reçu tous les ACK correspondant à la cwnd
+                            this.rtt = (System.currentTimeMillis()-this.sendTime)/1000.0;
+                            System.out.println("rtt = " + this.rtt);
+                            this.sendNextSegementGroup(Math.max(this.wTcp, 1));
                         }
-                        this.lastAckSeg = receivedAck;
+                        this.lastAckSeg = Math.max(receivedAck, this.lastAckSeg);
                    }
                 } else  { //Sinon, c'est qu'on a demandé un fichier
                     System.out.println("File asked by client : " + received);
                     this.selectFile(received);
-                    this.sendNextSegementGroup(this.cwnd);
+                    this.sendNextSegementGroup(Math.max(this.cwnd, 1));
                 }
             } catch (SocketTimeoutException e) { //Si on reçoit pas les ACK à temps...
                 if (this.isConnectionAck) {
                     /*this.cwnd--;
                     if (this.cwnd<=0) this.cwnd =1;*/
-                    this.sendNextSegementGroup(this.cwnd);
+                    System.out.println("Timout !");
+                    this.sendNextSegementGroup(Math.max(this.cwnd, 1));
+                    this.cubicTimeout();
                 }
             } catch (IOException e) {
                 running = false;
@@ -99,19 +199,21 @@ public class FileServer extends Thread {
     }
 
 
-    private int getSegFromAck(String msg) {
+
+
+    private int getSegFromAck(String msg) { //Les segments commencent à 1
         return Integer.parseInt(msg.substring(3))-1;
     }
 
     private void sendNextSegementGroup(int nbSegements) {
         try {
-            for (this.lastSendedSeg= this.higherAckSeg+1; this.lastSendedSeg < this.higherAckSeg+1+nbSegements; this.lastSendedSeg++) {
+            for (this.lastSendedSeg= this.lastAckSeg+1; this.lastSendedSeg < this.lastAckSeg+1+nbSegements; this.lastSendedSeg++) {
                 if (running) {
                     this.sendSegment(this.lastSendedSeg);
                 }
                 else break;
             }
-            this.lastSendedSeg--;
+            //this.lastSendedSeg--;
         } catch (IOException ioException) {
             ioException.printStackTrace();
         }
@@ -160,7 +262,7 @@ public class FileServer extends Thread {
 
         DatagramPacket synPacket = new DatagramPacket(bin, bin.length, clientAdress, clientPort);
         this.socket.send(synPacket);
-        //this.sendTime = System.currentTimeMillis();
+        this.sendTime = System.currentTimeMillis();
         System.out.print("\rSended : " + binMsg + ", cwnd : " + this.cwnd);
     }
 
