@@ -2,17 +2,19 @@ package fr.insalyon.tc;
 
 import java.io.IOException;
 import java.net.*;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.sql.SQLOutput;
+import java.util.ArrayList;
 
-public class FileServer extends Thread {
+public class FixedFileServer extends Thread {
 
     //Variables du réseau UDP/du fichier à servir
     private DatagramSocket socket;
     private InetAddress clientAdress;
     private int clientPort;
     private byte[] servedFileBytes;
+    private ArrayList<DatagramPacket> contentPackets;
     private byte[] buf = new byte[256]; //buffer de réception
 
     //Variables d'Etat de serveur (servant fichier ? Fini ? etc)
@@ -20,13 +22,16 @@ public class FileServer extends Thread {
     private boolean isConnectionAck = false;
 
     //Variable pour refaire TCP
-    private int lastAckSeg = -1;
-    private int higherAckSeg = -1;
-    private int lastSendedSeg = 0;
-    private int segSize = 1500;
-    private int cwnd = 150;
-    private int timeout = 50;
-    private int redondantAckCount = 0;
+    int cwnd = 40;
+
+
+    int timeout = 60;
+    int maxAckSeg = -1;
+    int lastAckSeg = -1;
+    int lastSendedSeg = 0;
+    int segSize = 1500;
+    int redondantAckCount = 0;
+
 
     //Variables de metrics
     private long startTime = 0;
@@ -34,17 +39,20 @@ public class FileServer extends Thread {
 
 
 
-    public FileServer(InetAddress clientAddress, int clientPort) {
+    public FixedFileServer(InetAddress clientAddress, int clientPort) {
         this.clientAdress = clientAddress;
         this.clientPort = clientPort;
         this.startTime = System.currentTimeMillis();
         try {
             initiateSocketOnRange(1000, 9999);
-            this.socket.setSoTimeout(timeout);
+            this.socket.setSoTimeout(this.timeout);
         } catch (SocketException e) {
             e.printStackTrace();
         }
     }
+
+
+
 
     public void run() {
         running = true;
@@ -53,6 +61,7 @@ public class FileServer extends Thread {
             if (firstRun) {
                 firstRun = false;
                 sendSynMsg();
+
             }
             try {
                 String received = receiveString();
@@ -66,28 +75,38 @@ public class FileServer extends Thread {
                     if (receivedAck == this.lastAckSeg) {
                         this.redondantAckCount++;
                         if (this.redondantAckCount >= 3) {
-                            this.redondantAckCount = 0;
-                            this.sendSegment(receivedAck+1);
+                            //this.redondantAckCount = 0;
+                            //System.out.println("Redondant ACK");
+                            this.sendSegment(this.lastAckSeg+1);
                         }
                     } else {
                         this.redondantAckCount = 0;
-                        this.higherAckSeg = Math.max(this.lastAckSeg, receivedAck);
-                        if (this.higherAckSeg == this.lastSendedSeg) { //si on a reçu tous les ACK correspondant à la cwnd
-                            //System.out.println("RTT = " + (System.currentTimeMillis()-this.sendTime));
-                            this.sendNextSegementGroup(++this.cwnd);
+                        while (receivedAck >= this.lastSendedSeg - this.cwnd) {
+                            sendSegment(++this.lastSendedSeg);
                         }
-                        this.lastAckSeg = receivedAck;
-                   }
+                    }
+                    this.lastAckSeg = receivedAck;
+
                 } else  { //Sinon, c'est qu'on a demandé un fichier
                     System.out.println("File asked by client : " + received);
                     this.selectFile(received);
-                    this.sendNextSegementGroup(this.cwnd);
+                    this.contentPackets = this.initiateContentPackets();
+                    this.sendSegment(0);
                 }
             } catch (SocketTimeoutException e) { //Si on reçoit pas les ACK à temps...
                 if (this.isConnectionAck) {
                     /*this.cwnd--;
                     if (this.cwnd<=0) this.cwnd =1;*/
-                    this.sendNextSegementGroup(this.cwnd);
+
+                    System.out.println("Timout !");
+                    //this.cubicPacketLoss();
+                    try {
+                        this.sendSegment(this.lastAckSeg+1);
+                    } catch (IOException ioException) {
+                        ioException.printStackTrace();
+                    }
+                    //this.sendSegmentGroup(this.maxAckSeg+1, Math.max(this.cwnd, 1));
+
                 }
             } catch (IOException e) {
                 running = false;
@@ -99,13 +118,15 @@ public class FileServer extends Thread {
     }
 
 
-    private int getSegFromAck(String msg) {
+
+
+    private int getSegFromAck(String msg) { //Les segments commencent à 1
         return Integer.parseInt(msg.substring(3))-1;
     }
 
-    private void sendNextSegementGroup(int nbSegements) {
+    private void sendSegmentGroup(int firstSegment,int nbSegements) {
         try {
-            for (this.lastSendedSeg= this.higherAckSeg+1; this.lastSendedSeg < this.higherAckSeg+1+nbSegements; this.lastSendedSeg++) {
+            for (this.lastSendedSeg= firstSegment; this.lastSendedSeg < firstSegment+nbSegements; this.lastSendedSeg++) {
                 if (running) {
                     this.sendSegment(this.lastSendedSeg);
                 }
@@ -141,14 +162,23 @@ public class FileServer extends Thread {
     }
 
     private void sendSegment(int segNumber) throws IOException { //TODO Utiliser un stream peut être plus efficace qu'une variable !
+        if (segNumber >= this.contentPackets.size()) {
+            System.out.println("\nTéléchargement fini ! Debit moyen : " + this.calculateEndMeanRate() + " KB/S");
+            this.running = false;
+        } else if (segNumber < this.contentPackets.size()) {
+            this.socket.send(this.contentPackets.get(segNumber));
+            this.sendTime = System.currentTimeMillis();
+        }
+
+    }
+
+    private DatagramPacket createPacketForSegment(int segNumber) {
         String binMsg = String.format("%06d", (segNumber +1)); //Le +1 est là car le client a été codé par un MATLABiste
         byte[] bin = new byte[this.segSize];
         int dataWindowSize = this.segSize -binMsg.length();
-        if (dataWindowSize*segNumber >= this.servedFileBytes.length) {
-            System.out.println("\nTéléchargement fini ! Debit moyen : " + this.calculateEndMeanRate() + " KB/S");
+        if (dataWindowSize*segNumber > this.servedFileBytes.length) {
             binMsg = "FIN";
             bin = binMsg.getBytes();
-            this.running = false;
         }
         else {
             for (int i = 0; i < binMsg.length(); i++) bin[i] = binMsg.getBytes()[i];
@@ -158,10 +188,24 @@ public class FileServer extends Thread {
             }
         }
 
-        DatagramPacket synPacket = new DatagramPacket(bin, bin.length, clientAdress, clientPort);
-        this.socket.send(synPacket);
-        //this.sendTime = System.currentTimeMillis();
-        System.out.print("\rSended : " + binMsg + ", cwnd : " + this.cwnd);
+        return new DatagramPacket(bin, bin.length, clientAdress, clientPort);
+
+    }
+
+    private ArrayList<DatagramPacket> initiateContentPackets() {
+        ArrayList<DatagramPacket> array = new ArrayList<>();
+        int index = 0;
+        while (true) {
+            array.add(createPacketForSegment(index++));
+            if (new String(array.get(array.size()-1).getData(), StandardCharsets.UTF_8).equals("FIN")) {
+                return array;
+            }
+        }
+
+    }
+
+    private void sendEndSegment() throws IOException {
+
     }
 
     private void selectFile(String filePath) {

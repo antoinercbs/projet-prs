@@ -35,7 +35,7 @@ public class HubServer extends Thread {
             String received = new String(packet.getData(), 0, packet.getLength()-1);
             System.out.println("Recu : " + received + " | longeur : " +  received.length());
             if (received.equals("SYN")) {
-                CubicFileServer fs = new CubicFileServer(address, port);
+                FixedFileServer fs = new FixedFileServer(address, port);
                 fs.start();
             }
         }

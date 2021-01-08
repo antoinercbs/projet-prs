@@ -21,7 +21,7 @@ public class CubicFileServer extends Thread {
     //Variable pour refaire TCP
    boolean tcpFriendliness = true;
    boolean fastConvergence = true;
-   double beta = 0.2;
+   double beta = 0.7;
    double c = 0.4;
    double wLastMax = 0;
    double epochStart = 0;
@@ -35,7 +35,8 @@ public class CubicFileServer extends Thread {
    int cwndUpdate = 1;
 
 
-    int timeout = 150;
+    int timeout = 70;
+    int maxAckSeg = -1;
     int lastAckSeg = -1;
     int lastSendedSeg = 0;
     int segSize = 1500;
@@ -132,7 +133,7 @@ public class CubicFileServer extends Thread {
             if (this.wTcp>this.cwnd && this.wTcp > target) {
                /* this.maxCnt = this.cwnd/(this.wTcp-this.cwnd);
                 if (this.cwndUpdate > this.maxCnt) this.cwndUpdate = this.maxCnt;*/
-                this.cwndUpdate = (int) (this.cwnd + (this.wTcp-this.cwnd)/this.cwnd);
+                this.cwndUpdate = (int) (this.cwnd + (this.wTcp-this.cwnd)/(double) this.cwnd);
             }
         }
     }
@@ -147,7 +148,7 @@ public class CubicFileServer extends Thread {
                 firstRun = false;
                 sendSynMsg();
                 this.cubicInitialization();
-                this.cubicOnData();
+
             }
             try {
                 String received = receiveString();
@@ -155,39 +156,61 @@ public class CubicFileServer extends Thread {
                     if (received.equals("ACK")) { //Si le client ACK la connexion avec ce serveur
                         System.out.println("Port selection acknoledged by client");
                         this.isConnectionAck = true;
+                        this.cubicOnData();
                     }
                 } else if (received.startsWith("A")) { //Si on a reçu l'ACK du dernier seg transmit
                     int receivedAck = getSegFromAck(received);
-                    if (receivedAck == this.lastAckSeg) { //TODO : LE PROBLEME EST ICI !!!!
+                    if (receivedAck == this.lastAckSeg) this.redondantAckCount++;
+                    else this.redondantAckCount = 0;
+                    this.lastAckSeg = receivedAck;
+                    this.cubicOnData();
+
+                    if (receivedAck == this.lastSendedSeg) {
+                        this.redondantAckCount = 0;
+                        this.maxAckSeg = receivedAck;
+                        this.sendSegmentGroup(this.maxAckSeg+1, Math.max(this.cwnd, 1));
+                    } else if (this.redondantAckCount > 20) {
+                        this.redondantAckCount = 0;
+                        //System.out.println("Redondant ACK");
+                        this.cubicPacketLoss();
+                        this.sendSegmentGroup(this.lastAckSeg+1, Math.max(this.cwnd, 1));
+                    }
+                    /*if (receivedAck == this.lastAckSeg) { //TODO : LE PROBLEME EST ICI !!!!
                         this.redondantAckCount++;
+                        this.lastAckSeg = Math.max(receivedAck, this.lastAckSeg);
                         if (this.redondantAckCount >= 20) {
                             this.redondantAckCount = 0;
-                            System.out.println("ACK redondant détecté !!!");
+                            //System.out.println("ACK redondant détecté !!!");
                             this.cubicPacketLoss();
                             this.sendNextSegementGroup(Math.max(this.cwnd, 1));
                         }
                     } else {
                         this.redondantAckCount = 0;
                         this.cubicOnData();
-                        if (receivedAck == this.lastSendedSeg) { //si on a reçu tous les ACK correspondant à la cwnd
+                        this.lastAckSeg = Math.max(receivedAck, this.lastAckSeg);
+                       // System.out.println(this.lastAckSeg + " | " + this.lastSendedSeg);
+                        if (this.lastAckSeg == this.lastSendedSeg) { //si on a reçu tous les ACK correspondant à la cwnd
+                            //System.out.println(this.lastAckSeg + " | " + this.lastSendedSeg);
                             this.rtt = (System.currentTimeMillis()-this.sendTime)/1000.0;
-                            System.out.println("rtt = " + this.rtt);
+                            //*System.out.println("rtt = " + this.rtt);
                             this.sendNextSegementGroup(Math.max(this.wTcp, 1));
                         }
-                        this.lastAckSeg = Math.max(receivedAck, this.lastAckSeg);
-                   }
+
+                   }*/
                 } else  { //Sinon, c'est qu'on a demandé un fichier
                     System.out.println("File asked by client : " + received);
                     this.selectFile(received);
-                    this.sendNextSegementGroup(Math.max(this.cwnd, 1));
+                    this.sendSegmentGroup(0, Math.max(this.cwnd, 1));
                 }
             } catch (SocketTimeoutException e) { //Si on reçoit pas les ACK à temps...
                 if (this.isConnectionAck) {
                     /*this.cwnd--;
                     if (this.cwnd<=0) this.cwnd =1;*/
-                    System.out.println("Timout !");
-                    this.sendNextSegementGroup(Math.max(this.cwnd, 1));
+                    //System.out.println("Timout !");
                     this.cubicTimeout();
+                    //this.cubicPacketLoss();
+                    this.sendSegmentGroup(this.maxAckSeg+1, Math.max(this.cwnd, 1));
+
                 }
             } catch (IOException e) {
                 running = false;
@@ -205,15 +228,15 @@ public class CubicFileServer extends Thread {
         return Integer.parseInt(msg.substring(3))-1;
     }
 
-    private void sendNextSegementGroup(int nbSegements) {
+    private void sendSegmentGroup(int firstSegment,int nbSegements) {
         try {
-            for (this.lastSendedSeg= this.lastAckSeg+1; this.lastSendedSeg < this.lastAckSeg+1+nbSegements; this.lastSendedSeg++) {
+            for (this.lastSendedSeg= firstSegment; this.lastSendedSeg < firstSegment+nbSegements; this.lastSendedSeg++) {
                 if (running) {
                     this.sendSegment(this.lastSendedSeg);
                 }
                 else break;
             }
-            //this.lastSendedSeg--;
+            this.lastSendedSeg--;
         } catch (IOException ioException) {
             ioException.printStackTrace();
         }
@@ -263,7 +286,7 @@ public class CubicFileServer extends Thread {
         DatagramPacket synPacket = new DatagramPacket(bin, bin.length, clientAdress, clientPort);
         this.socket.send(synPacket);
         this.sendTime = System.currentTimeMillis();
-        System.out.print("\rSended : " + binMsg + ", cwnd : " + this.cwnd);
+       System.out.println( this.cwnd);
     }
 
     private void selectFile(String filePath) {
