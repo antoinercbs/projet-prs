@@ -101,12 +101,14 @@ public class FileServer extends Thread {
                         this.redondantAckCount++;
                         if (this.redondantAckCount >= 3) { //Si 3e ACK redondant --> FastRetransmit
                            // System.out.println("Redondant ACK : " + receivedAck);
+                            this.redondantAckCount = 0;
                             this.sendSegment(receivedAck+1);
-                            //if (this.redondantAckCount == 3) this.CAPacketLoss();
+
+                            if (this.redondantAckCount == 3) this.CAPacketLoss();
                         }
                     } else {
                         this.redondantAckCount = 0;
-                        this.rttManager.calculateRtt(receivedAck);
+                        //this.rttManager.calculateRtt(receivedAck);
                         //this.socket.setSoTimeout(this.rttManager.getTimeoutDelay());
                         while (receivedAck >= this.lastSendedSeg - this.cwnd) {
                             sendSegment(++this.lastSendedSeg);
@@ -119,9 +121,9 @@ public class FileServer extends Thread {
                     this.sendSegment(0);
                 }
             } catch (SocketTimeoutException e) { //Si on ne reçoit rien pendant un temps donné...
-                if (this.isConnectionAck) {
+                if (this.isConnectionAck && this.packetGenerator !=null) {
                     System.out.println("Timout ! Last sended : " + this.lastSendedSeg);
-                    //this.CATimeout();
+                    this.CATimeout();
                     try {
                         this.sendSegment(this.lastAckSeg+1);
                     } catch (IOException ioException) {
