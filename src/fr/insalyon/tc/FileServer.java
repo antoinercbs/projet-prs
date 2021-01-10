@@ -14,6 +14,7 @@ public class FileServer extends Thread {
     private InetAddress clientAdress;
     private int clientPort;
     private byte[] servedFileBytes;
+    private boolean[] receivedAcks = new boolean[999999];
     private ArrayList<DatagramPacket> contentPackets;
     private byte[] buf = new byte[256]; //buffer de réception
 
@@ -27,6 +28,8 @@ public class FileServer extends Thread {
 
 
     int timeout = 40;
+
+    RttManager rttManager;
 
     int lastAckSeg = -1;
     int lastSendedSeg = 0;
@@ -44,6 +47,7 @@ public class FileServer extends Thread {
         this.clientAdress = clientAddress;
         this.clientPort = clientPort;
         this.startTime = System.currentTimeMillis();
+        this.rttManager = new RttManager();
         try {
             initiateSocketOnRange(1000, 9999);
             this.socket.setSoTimeout(this.timeout);
@@ -77,7 +81,9 @@ public class FileServer extends Thread {
         while (running) {
             try {
                 String received = receiveString();
+
                 this.CAOnData();
+
                 if (!isConnectionAck) {
                     if (received.equals("ACK")) { //Si le client ACK la connexion avec ce serveur
                         System.out.println("Port selection acknoledged by client");
@@ -85,17 +91,32 @@ public class FileServer extends Thread {
                     }
                 } else if (received.startsWith("A")) { //Si on a reçu un ACK
                     int receivedAck = getSegFromAck(received);
+                    //this.receivedAcks[receivedAck] = true;
                     if (receivedAck == this.lastAckSeg) { //Si ACK redondant
                         this.redondantAckCount++;
                         if (this.redondantAckCount >= 3) { //Si 3e ACK redondant --> FastRetransmit
-                            //this.redondantAckCount = 0;
-                            System.out.println("Redondant ACK");
+                            System.out.println("Redondant ACK : " + receivedAck);
+                           /* int to = this.socket.getSoTimeout();
+                            this.socket.setSoTimeout(3);
+                            DatagramPacket packet = new DatagramPacket(buf, buf.length);
+                            long t = System.currentTimeMillis();
+                            while (true) {
+                                try {
+                                    this.socket.receive(packet);
+                                } catch (SocketTimeoutException e) {
+                                    break;
+                                }
+                            }
+                            System.out.println((t-System.currentTimeMillis()));
+                            this.socket.setSoTimeout(to);*/
                             this.sendSegment(this.lastAckSeg+1);
+                            //System.out.println("Sended back : " + (this.lastAckSeg+1));
                             this.CAPacketLoss();
                         }
                     } else {
                         this.redondantAckCount = 0;
-
+                        this.rttManager.calculateRtt(receivedAck);
+                        //this.socket.setSoTimeout(this.rttManager.getTimeoutDelay());
                         while (receivedAck >= this.lastSendedSeg - this.cwnd) {
                             sendSegment(++this.lastSendedSeg);
                         }
@@ -107,9 +128,9 @@ public class FileServer extends Thread {
                     this.contentPackets = this.initiateContentPackets();
                     this.sendSegment(0);
                 }
-            } catch (SocketTimeoutException e) { //Si on reçoit pas les ACK à temps...
+            } catch (SocketTimeoutException e) { //Si on ne reçoit rien pendant un temps donné...
                 if (this.isConnectionAck) {
-                    System.out.println("Timout !");
+                    System.out.println("Timout ! Last sended : " + this.lastSendedSeg);
                     //this.cubicTimeout();
                     try {
                         this.sendSegment(this.lastAckSeg+1);
@@ -163,6 +184,7 @@ public class FileServer extends Thread {
             this.running = false;
         } else if (segNumber < this.contentPackets.size()) {
             this.socket.send(this.contentPackets.get(segNumber));
+            this.rttManager.startTimecounter(segNumber);
             this.sendTime = System.currentTimeMillis();
         }
 
@@ -218,6 +240,6 @@ public class FileServer extends Thread {
                 continue;
             }
         }
-        throw new SocketException("no free port found on [" + minPort +":" + maxPort + "]");
+        throw new SocketException("pas de port libre sur [" + minPort +":" + maxPort + "]");
     }
 }

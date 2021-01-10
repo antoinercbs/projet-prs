@@ -18,7 +18,6 @@ public class CubicFileServer extends FileServer {
    double minRtt = 0;
    int wTcp = 0;
    double k = 0;
-   double rtt = 0.02;
    int ssthresh = Integer.MAX_VALUE;
    int cwndUpdate = 1;
 
@@ -66,8 +65,8 @@ public class CubicFileServer extends FileServer {
     }
 
     void CAOnData() {
-        if (this.minRtt != 0) this.minRtt = Math.min(this.minRtt, this.rtt);
-        else this.minRtt = this.rtt;
+        if (this.minRtt != 0) this.minRtt = Math.min(this.minRtt, this.rttManager.getSRtt()/1000.0);
+        else this.minRtt = this.rttManager.getSRtt()/1000.0;
         if (this.cwnd <= this.ssthresh) this.cwnd++;
         else {
             this.cubicUpdate();
@@ -99,7 +98,7 @@ public class CubicFileServer extends FileServer {
         }
         if (this.tcpFriendliness) {
             //this.cubicTcpFriendliness();
-            this.wTcp = (int) (this.wTcp + (3*this.beta)/(2-this.beta) * t/this.rtt);
+            this.wTcp = (int) (this.wTcp + (3*this.beta)/(2-this.beta) * t/(this.rttManager.getSRtt()/1000.0));
             if (this.wTcp>this.cwnd && this.wTcp > target) {
                /* this.maxCnt = this.cwnd/(this.wTcp-this.cwnd);
                 if (this.cwndUpdate > this.maxCnt) this.cwndUpdate = this.maxCnt;*/
