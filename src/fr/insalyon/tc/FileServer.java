@@ -175,7 +175,7 @@ public class FileServer extends Thread {
     }
 
     private void sendSegment(int segNumber) throws IOException {
-        if (segNumber >= this.packetGenerator.getSizeInPackets()) {
+        if (this.lastAckSeg == this.packetGenerator.getSizeInPackets() - 1) {
             System.out.println("\nTéléchargement fini ! Debit moyen : " + this.calculateEndMeanRate() + " KB/S");
             this.socket.send(this.packetGenerator.getFinPacket());
             this.running = false;
