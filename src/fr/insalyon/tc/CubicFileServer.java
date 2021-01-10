@@ -1,22 +1,11 @@
 package fr.insalyon.tc;
 
-import java.io.IOException;
+
 import java.net.*;
-import java.nio.file.Files;
-import java.nio.file.Path;
 
-public class CubicFileServer extends Thread {
+import java.util.ArrayList;
 
-    //Variables du réseau UDP/du fichier à servir
-    private DatagramSocket socket;
-    private InetAddress clientAdress;
-    private int clientPort;
-    private byte[] servedFileBytes;
-    private byte[] buf = new byte[256]; //buffer de réception
-
-    //Variables d'Etat de serveur (servant fichier ? Fini ? etc)
-    private boolean running;
-    private boolean isConnectionAck = false;
+public class CubicFileServer extends FileServer {
 
     //Variable pour refaire TCP
    boolean tcpFriendliness = true;
@@ -29,39 +18,20 @@ public class CubicFileServer extends Thread {
    double minRtt = 0;
    int wTcp = 0;
    double k = 0;
-   double rtt = 0;
-   int cwnd = 1;
+   double rtt = 0.02;
    int ssthresh = Integer.MAX_VALUE;
    int cwndUpdate = 1;
 
 
-    int timeout = 70;
-    int maxAckSeg = -1;
-    int lastAckSeg = -1;
-    int lastSendedSeg = 0;
-    int segSize = 1500;
-    int redondantAckCount = 0;
 
-
-    //Variables de metrics
-    private long startTime = 0;
-    private long sendTime = 0;
 
 
 
     public CubicFileServer(InetAddress clientAddress, int clientPort) {
-        this.clientAdress = clientAddress;
-        this.clientPort = clientPort;
-        this.startTime = System.currentTimeMillis();
-        try {
-            initiateSocketOnRange(1000, 9999);
-            this.socket.setSoTimeout(this.timeout);
-        } catch (SocketException e) {
-            e.printStackTrace();
-        }
+        super(clientAddress, clientPort);
     }
 
-    private void cubicReset() {
+    void cubicReset() {
         this.wLastMax = 0;
         this.epochStart = 0;
         this.originPoint = 0;
@@ -71,7 +41,7 @@ public class CubicFileServer extends Thread {
         this.ssthresh = Integer.MAX_VALUE;
     }
 
-    private void cubicInitialization() {
+    void CAInitialization() {
         this.tcpFriendliness = true;
         this.fastConvergence = true;
         this.beta = 0.2;
@@ -79,12 +49,12 @@ public class CubicFileServer extends Thread {
         this.cubicReset();
     }
 
-    private void cubicTimeout() {
+    void CATimeout() {
         this.cubicReset();
     }
 
 
-    private void cubicPacketLoss() {
+    void CAPacketLoss() {
         this.epochStart = 0;
         if (this.cwnd < this.wLastMax && this.fastConvergence) {
             this.wLastMax = this.cwnd*(2*this.beta)/2.0;
@@ -95,7 +65,7 @@ public class CubicFileServer extends Thread {
         this.ssthresh = cwnd;
     }
 
-    private void cubicOnData() {
+    void CAOnData() {
         if (this.minRtt != 0) this.minRtt = Math.min(this.minRtt, this.rtt);
         else this.minRtt = this.rtt;
         if (this.cwnd <= this.ssthresh) this.cwnd++;
@@ -138,175 +108,4 @@ public class CubicFileServer extends Thread {
         }
     }
 
-
-
-    public void run() {
-        running = true;
-        boolean firstRun = true;
-        while (running) {
-            if (firstRun) {
-                firstRun = false;
-                sendSynMsg();
-                this.cubicInitialization();
-
-            }
-            try {
-                String received = receiveString();
-                if (!isConnectionAck) {
-                    if (received.equals("ACK")) { //Si le client ACK la connexion avec ce serveur
-                        System.out.println("Port selection acknoledged by client");
-                        this.isConnectionAck = true;
-                        this.cubicOnData();
-                    }
-                } else if (received.startsWith("A")) { //Si on a reçu l'ACK du dernier seg transmit
-                    int receivedAck = getSegFromAck(received);
-                    if (receivedAck == this.lastAckSeg) this.redondantAckCount++;
-                    else this.redondantAckCount = 0;
-                    this.lastAckSeg = receivedAck;
-                    this.cubicOnData();
-
-                    if (receivedAck == this.lastSendedSeg) {
-                        this.redondantAckCount = 0;
-                        this.maxAckSeg = receivedAck;
-                        this.sendSegmentGroup(this.maxAckSeg+1, Math.max(this.cwnd, 1));
-                    } else if (this.redondantAckCount > 20) {
-                        this.redondantAckCount = 0;
-                        //System.out.println("Redondant ACK");
-                        this.cubicPacketLoss();
-                        this.sendSegmentGroup(this.lastAckSeg+1, Math.max(this.cwnd, 1));
-                    }
-                    /*if (receivedAck == this.lastAckSeg) { //TODO : LE PROBLEME EST ICI !!!!
-                        this.redondantAckCount++;
-                        this.lastAckSeg = Math.max(receivedAck, this.lastAckSeg);
-                        if (this.redondantAckCount >= 20) {
-                            this.redondantAckCount = 0;
-                            //System.out.println("ACK redondant détecté !!!");
-                            this.cubicPacketLoss();
-                            this.sendNextSegementGroup(Math.max(this.cwnd, 1));
-                        }
-                    } else {
-                        this.redondantAckCount = 0;
-                        this.cubicOnData();
-                        this.lastAckSeg = Math.max(receivedAck, this.lastAckSeg);
-                       // System.out.println(this.lastAckSeg + " | " + this.lastSendedSeg);
-                        if (this.lastAckSeg == this.lastSendedSeg) { //si on a reçu tous les ACK correspondant à la cwnd
-                            //System.out.println(this.lastAckSeg + " | " + this.lastSendedSeg);
-                            this.rtt = (System.currentTimeMillis()-this.sendTime)/1000.0;
-                            //*System.out.println("rtt = " + this.rtt);
-                            this.sendNextSegementGroup(Math.max(this.wTcp, 1));
-                        }
-
-                   }*/
-                } else  { //Sinon, c'est qu'on a demandé un fichier
-                    System.out.println("File asked by client : " + received);
-                    this.selectFile(received);
-                    this.sendSegmentGroup(0, Math.max(this.cwnd, 1));
-                }
-            } catch (SocketTimeoutException e) { //Si on reçoit pas les ACK à temps...
-                if (this.isConnectionAck) {
-                    /*this.cwnd--;
-                    if (this.cwnd<=0) this.cwnd =1;*/
-                    //System.out.println("Timout !");
-                    this.cubicTimeout();
-                    //this.cubicPacketLoss();
-                    this.sendSegmentGroup(this.maxAckSeg+1, Math.max(this.cwnd, 1));
-
-                }
-            } catch (IOException e) {
-                running = false;
-                e.printStackTrace();
-            }
-        }
-        socket.close();
-        System.out.println("Fermeture du socket, fin du thread");
-    }
-
-
-
-
-    private int getSegFromAck(String msg) { //Les segments commencent à 1
-        return Integer.parseInt(msg.substring(3))-1;
-    }
-
-    private void sendSegmentGroup(int firstSegment,int nbSegements) {
-        try {
-            for (this.lastSendedSeg= firstSegment; this.lastSendedSeg < firstSegment+nbSegements; this.lastSendedSeg++) {
-                if (running) {
-                    this.sendSegment(this.lastSendedSeg);
-                }
-                else break;
-            }
-            this.lastSendedSeg--;
-        } catch (IOException ioException) {
-            ioException.printStackTrace();
-        }
-    }
-
-    private double calculateEndMeanRate() {
-        return this.servedFileBytes.length/(System.currentTimeMillis()-this.startTime);
-    }
-
-    private String receiveString() throws IOException {
-        DatagramPacket packet = new DatagramPacket(buf, buf.length);
-        socket.receive(packet);
-        String received = new String(packet.getData(), 0, packet.getLength()-1);
-        return received;
-    }
-
-    private void sendSynMsg() {
-        String synMsg = "SYN-ACK"+ socket.getLocalPort();
-        DatagramPacket synPacket = new DatagramPacket(synMsg.getBytes(), synMsg.length(), clientAdress, clientPort);
-        try {
-            this.socket.send(synPacket);
-        } catch (IOException e) {
-            e.printStackTrace();
-            this.running = false;
-        }
-        System.out.println("Sended : " + synMsg);
-    }
-
-    private void sendSegment(int segNumber) throws IOException { //TODO Utiliser un stream peut être plus efficace qu'une variable !
-        String binMsg = String.format("%06d", (segNumber +1)); //Le +1 est là car le client a été codé par un MATLABiste
-        byte[] bin = new byte[this.segSize];
-        int dataWindowSize = this.segSize -binMsg.length();
-        if (dataWindowSize*segNumber >= this.servedFileBytes.length) {
-            System.out.println("\nTéléchargement fini ! Debit moyen : " + this.calculateEndMeanRate() + " KB/S");
-            binMsg = "FIN";
-            bin = binMsg.getBytes();
-            this.running = false;
-        }
-        else {
-            for (int i = 0; i < binMsg.length(); i++) bin[i] = binMsg.getBytes()[i];
-            int j = binMsg.length();
-            for (int i = dataWindowSize * segNumber; i < Math.min((segNumber + 1) * dataWindowSize, this.servedFileBytes.length); i++) {
-                bin[j++] = this.servedFileBytes[i];
-            }
-        }
-
-        DatagramPacket synPacket = new DatagramPacket(bin, bin.length, clientAdress, clientPort);
-        this.socket.send(synPacket);
-        this.sendTime = System.currentTimeMillis();
-       System.out.println( this.cwnd);
-    }
-
-    private void selectFile(String filePath) {
-        try {
-            this.servedFileBytes = Files.readAllBytes(Path.of(filePath));
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-    }
-
-    private void initiateSocketOnRange(int minPort, int maxPort)  throws SocketException{
-        for (int i = minPort; i <= maxPort; i++) {
-            try {
-                this.socket = new DatagramSocket(i);
-                System.out.println("Port choisi : " + i);
-                return;
-            } catch (IOException ex) {
-                continue;
-            }
-        }
-        throw new SocketException("no free port found on [" + minPort +":" + maxPort + "]");
-    }
 }

@@ -35,8 +35,17 @@ public class HubServer extends Thread {
             String received = new String(packet.getData(), 0, packet.getLength()-1);
             System.out.println("Recu : " + received + " | longeur : " +  received.length());
             if (received.equals("SYN")) {
-                FixedFileServer fs = new FixedFileServer(address, port);
-                fs.start();
+                boolean fixed = true;
+                if (fixed) {
+                    FixedFileServer fs = new FixedFileServer(address, port);
+                    fs.start();
+
+                } else {
+                    CubicFileServer fs = new CubicFileServer(address, port);
+                    fs.start();
+                }
+
+
             }
         }
         socket.close();
