@@ -7,6 +7,7 @@ public class FixedFileServer extends FileServer {
 
     public FixedFileServer(InetAddress clientAddress, int clientPort) {
         super(clientAddress, clientPort);
-        this.cwnd = 3;
+        System.out.println("Initializing fixed cwnd size server");
+        this.cwnd = 40;
     }
 }
