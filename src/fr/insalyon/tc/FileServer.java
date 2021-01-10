@@ -100,9 +100,8 @@ public class FileServer extends Thread {
                     if (receivedAck == this.lastAckSeg) { //Si ACK redondant
                         this.redondantAckCount++;
                         if (this.redondantAckCount >= 3) { //Si 3e ACK redondant --> FastRetransmit
-                            System.out.println("Redondant ACK : " + receivedAck);
-                            this.sendSegment(this.lastAckSeg+1);
-                            //System.out.println("Sended back : " + (this.lastAckSeg+1));
+                           // System.out.println("Redondant ACK : " + receivedAck);
+                            this.sendSegment(receivedAck+1);
                             //if (this.redondantAckCount == 3) this.CAPacketLoss();
                         }
                     } else {
@@ -173,7 +172,7 @@ public class FileServer extends Thread {
         System.out.println("Sended : " + synMsg);
     }
 
-    private void sendSegment(int segNumber) throws IOException { //TODO Utiliser un stream peut être plus efficace qu'une variable !
+    private void sendSegment(int segNumber) throws IOException {
         if (segNumber >= this.packetGenerator.getSizeInPackets()) {
             System.out.println("\nTéléchargement fini ! Debit moyen : " + this.calculateEndMeanRate() + " KB/S");
             this.socket.send(this.packetGenerator.getFinPacket());
