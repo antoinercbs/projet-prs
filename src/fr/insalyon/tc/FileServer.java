@@ -85,7 +85,7 @@ public class FileServer extends Thread {
                 String received = receiveString();
                 this.timeoutCount = 0;
 
-                this.CAOnData();
+
 
                 if (!isConnectionAck) {
                     if (received.equals("ACK")) { //Si le client ACK la connexion avec ce serveur
@@ -93,12 +93,13 @@ public class FileServer extends Thread {
                         this.isConnectionAck = true;
                     }
                 } else if (received.startsWith("A")) { //Si on a reçu un ACK
+                    this.CAOnData();
                     int receivedAck = getSegFromAck(received);
                     this.maxReceivedAck = Math.max(this.maxReceivedAck, receivedAck);
                     if (receivedAck == this.lastAckSeg) { //Si ACK redondant
                         this.redondantAckCount++;
                         if (this.redondantAckCount == 3) { //Si 3e ACK redondant --> FastRetransmit
-                           // System.out.println("Redondant ACK : " + receivedAck);
+                            //System.out.println("Redondant ACK : " + receivedAck);
                             this.redondantAckCount = 0;
                             this.sendSegment(receivedAck+1);
                             this.CAPacketLoss();
@@ -107,7 +108,7 @@ public class FileServer extends Thread {
                         this.redondantAckCount = 0;
                         this.rttManager.calculateRtt(receivedAck);
                         this.socket.setSoTimeout(this.rttManager.getTimeoutDelay());
-                        while (this.lastSendedSeg <= this.maxReceivedAck + this.cwnd) {
+                        while (this.lastSendedSeg <= this.maxReceivedAck + this.cwnd+5) {
                             sendSegment(++this.lastSendedSeg);
                         }
                     }
@@ -120,7 +121,7 @@ public class FileServer extends Thread {
                 }
             } catch (SocketTimeoutException e) { //Si on ne reçoit rien pendant un temps donné...
                 if (this.isConnectionAck && this.packetGenerator !=null) {
-                    System.out.println("Timout ! Max received ACK : " + this.maxReceivedAck);
+                    //System.out.println("Timout ! Max received ACK : " + this.maxReceivedAck);
                     this.CATimeout();
                     try {
                         this.sendSegment(this.maxReceivedAck+1);
@@ -179,6 +180,7 @@ public class FileServer extends Thread {
             this.socket.send(this.packetGenerator.getFinPacket());
             this.running = false;
         } else if (segNumber < this.packetGenerator.getSizeInPackets()) {
+            //System.out.println(((System.currentTimeMillis()-startTime)) + ";" + cwnd);
             this.socket.send(this.packetGenerator.readPacketForSegment(segNumber));
             this.rttManager.startTimecounter(segNumber);
         }

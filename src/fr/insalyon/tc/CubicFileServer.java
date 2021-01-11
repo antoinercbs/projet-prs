@@ -12,7 +12,7 @@ public class CubicFileServer extends FileServer {
    boolean fastConvergence = true;
    double beta = 0.7;
    double c = 0.4;
-   double wLastMax = 0;
+   int wLastMax = 0;
    double epochStart = 0;
    double originPoint = 0;
    double minRtt = 0;
@@ -37,7 +37,7 @@ public class CubicFileServer extends FileServer {
         this.minRtt = 0;
         this.wTcp = 0;
         this.k = 0;
-        this.ssthresh = Integer.MAX_VALUE;
+        this.ssthresh = 30;
     }
 
     void CAInitialization() {
@@ -56,7 +56,7 @@ public class CubicFileServer extends FileServer {
     void CAPacketLoss() {
         this.epochStart = 0;
         if (this.cwnd < this.wLastMax && this.fastConvergence) {
-            this.wLastMax = this.cwnd*(2*this.beta)/2.0;
+            this.wLastMax = (int) (this.cwnd*(2-this.beta)/2);
         } else {
             this.wLastMax = this.cwnd;
         }

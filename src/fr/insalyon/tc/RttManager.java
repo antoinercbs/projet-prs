@@ -5,8 +5,8 @@ public class RttManager {
     private int sRtt = 40;
     private int rttVariance = 5;
 
-    private int MAX_TIMEOUT = 300;
-    private int MIN_TIMEOUT = 5;
+    private int MAX_TIMEOUT = 400;
+    private int MIN_TIMEOUT = 2;
 
     private long[] startTimestamps = new long[999999];
     private double alpha = 0.125;
