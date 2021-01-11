@@ -16,8 +16,6 @@ public class FileServer extends Thread {
 
     PacketGenerator packetGenerator;
 
-    private boolean[] receivedAcks = new boolean[999999];
-
 
     private byte[] buf = new byte[256]; //buffer de réception
 
@@ -37,20 +35,20 @@ public class FileServer extends Thread {
 
     int lastAckSeg = -1;
     int lastSendedSeg = 0;
+    int maxReceivedAck = 0;
     int segSize = 1500;
     int redondantAckCount = 0;
 
 
     //Variables de metrics
     private long startTime = 0;
-    private long sendTime = 0;
+
 
 
 
     public FileServer(InetAddress clientAddress, int clientPort) {
         this.clientAdress = clientAddress;
         this.clientPort = clientPort;
-        this.startTime = System.currentTimeMillis();
         this.rttManager = new RttManager();
         try {
             initiateSocketOnRange(1000, 9999);
@@ -96,21 +94,20 @@ public class FileServer extends Thread {
                     }
                 } else if (received.startsWith("A")) { //Si on a reçu un ACK
                     int receivedAck = getSegFromAck(received);
-                    //this.receivedAcks[receivedAck] = true;
+                    this.maxReceivedAck = Math.max(this.maxReceivedAck, receivedAck);
                     if (receivedAck == this.lastAckSeg) { //Si ACK redondant
                         this.redondantAckCount++;
-                        if (this.redondantAckCount >= 3) { //Si 3e ACK redondant --> FastRetransmit
+                        if (this.redondantAckCount == 3) { //Si 3e ACK redondant --> FastRetransmit
                            // System.out.println("Redondant ACK : " + receivedAck);
                             this.redondantAckCount = 0;
                             this.sendSegment(receivedAck+1);
-
-                            if (this.redondantAckCount == 3) this.CAPacketLoss();
+                            this.CAPacketLoss();
                         }
                     } else {
                         this.redondantAckCount = 0;
-                        //this.rttManager.calculateRtt(receivedAck);
-                        //this.socket.setSoTimeout(this.rttManager.getTimeoutDelay());
-                        while (receivedAck >= this.lastSendedSeg - this.cwnd) {
+                        this.rttManager.calculateRtt(receivedAck);
+                        this.socket.setSoTimeout(this.rttManager.getTimeoutDelay());
+                        while (this.lastSendedSeg <= this.maxReceivedAck + this.cwnd) {
                             sendSegment(++this.lastSendedSeg);
                         }
                     }
@@ -118,21 +115,23 @@ public class FileServer extends Thread {
                 } else  { //Sinon, c'est qu'on a demandé un fichier
                     System.out.println("File asked by client : " + received);
                     this.packetGenerator = new PacketGenerator(this.segSize, received, this.clientAdress, this.clientPort);
+                    this.startTime = System.currentTimeMillis();
                     this.sendSegment(0);
                 }
             } catch (SocketTimeoutException e) { //Si on ne reçoit rien pendant un temps donné...
                 if (this.isConnectionAck && this.packetGenerator !=null) {
-                    System.out.println("Timout ! Last sended : " + this.lastSendedSeg);
+                    System.out.println("Timout ! Max received ACK : " + this.maxReceivedAck);
                     this.CATimeout();
                     try {
-                        this.sendSegment(this.lastAckSeg+1);
+                        this.sendSegment(this.maxReceivedAck+1);
+                        this.lastSendedSeg = this.maxReceivedAck+1;
                     } catch (IOException ioException) {
                         ioException.printStackTrace();
                     }
                 }
                 if (++this.timeoutCount > 100) {
                     this.running = false;
-                    System.out.println("Abandon du dialogue ! 100 timeouts successifs !");
+                    System.out.println("Abandon du dialogue ! 100 timeouts successifs ça fait bokou quand même!");
                 }
             } catch (IOException e) {
                 running = false;
@@ -175,14 +174,13 @@ public class FileServer extends Thread {
     }
 
     private void sendSegment(int segNumber) throws IOException {
-        if (this.lastAckSeg == this.packetGenerator.getSizeInPackets() - 1) {
+        if (this.maxReceivedAck == this.packetGenerator.getSizeInPackets() - 1) {
             System.out.println("\nTéléchargement fini ! Debit moyen : " + this.calculateEndMeanRate() + " KB/S");
             this.socket.send(this.packetGenerator.getFinPacket());
             this.running = false;
         } else if (segNumber < this.packetGenerator.getSizeInPackets()) {
             this.socket.send(this.packetGenerator.readPacketForSegment(segNumber));
             this.rttManager.startTimecounter(segNumber);
-            this.sendTime = System.currentTimeMillis();
         }
 
     }

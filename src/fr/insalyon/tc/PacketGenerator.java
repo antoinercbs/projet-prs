@@ -37,6 +37,7 @@ public class PacketGenerator {
         }
         this.fileSize = length;
         this.sizeInPackets = length/this.dataSize + 1;
+        System.out.println(this.sizeInPackets + " packets de " + this.dataSize + " octets utiles à envoyer.");
 
     }
 
